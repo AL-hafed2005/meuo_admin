@@ -625,8 +625,22 @@ function renderTables() {
 function generateQR(tableId, tableNumber) {
   const canvas = document.getElementById('qr-' + tableId);
   if (!canvas) return;
-  const url = window.location.origin + '/customer-menu.html?table=' + tableNumber;
-  drawQRCode(canvas, url);
+
+  // ---------------------------------------------------------
+  // رابط صفحة الزبون المرفوع على GitHub Pages
+  // ملاحظة: تأكد أن اسم الملف داخل المجلد هو index.html أو customer-menu.html
+  // حسب ما قمت برفعته. افترضت هنا أن الصفحة الرئيسية للمجلد هي التي تحتوي القائمة.
+  // ---------------------------------------------------------
+  
+  const baseWebsiteURL = "https://al-hafed2005.github.io/meno_cust"; 
+  const customerPagePath = "/index.html"; // إذا كان ملف الزبون اسمه مختلفاً، غير هذا الاسم (مثلاً menu.html)
+  
+  // تجميع الرابط النهائي ليصبح مثلاً:
+  // https://al-hafed2005.github.io/meno_cust/index.html?table=1
+  const finalLink = baseWebsiteURL + customerPagePath + "?table=" + tableNumber;
+
+  // رسم الباركود باستخدام الرابط الجديد
+  drawQRCode(canvas, finalLink);
 }
 
 function downloadQR(tableId, tableNumber) {
