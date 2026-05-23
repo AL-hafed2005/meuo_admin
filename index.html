@@ -9,11 +9,7 @@
 <script src="https://cdn.tailwindcss.com"></script>
 <script>
 tailwind.config = {
-  theme: {
-    extend: {
-      fontFamily: { sans: ['Tajawal', 'sans-serif'] },
-    }
-  }
+  theme: { extend: { fontFamily: { sans: ['Tajawal', 'sans-serif'] } } }
 }
 </script>
 <style>
@@ -21,16 +17,513 @@ tailwind.config = {
   .tab-btn.active { background: #D97706; color: white; }
   .tab-btn { transition: all 0.2s; }
   .modal-bg { backdrop-filter: blur(4px); }
-  input[type=file] { display: none; }
   .status-badge { display: inline-block; padding: 2px 12px; border-radius: 999px; font-size: 0.75rem; font-weight: 600; }
-  .status-pending { background: #FEF3C7; color: #92400E; }
-  .status-preparing { background: #DBEAFE; color: #1E40AF; }
-  .status-ready { background: #D1FAE5; color: #065F46; }
-  .status-served { background: #F3F4F6; color: #374151; }
-  .status-cancelled { background: #FEE2E2; color: #991B1B; }
-  .new-order-alert { animation: pulse 1s ease-in-out 3; }
-  @keyframes pulse { 0%,100%{background:#D97706} 50%{background:#B45309} }
+  .status-pending { background:#FEF3C7;color:#92400E; }
+  .status-preparing { background:#DBEAFE;color:#1E40AF; }
+  .status-ready { background:#D1FAE5;color:#065F46; }
+  .status-served { background:#F3F4F6;color:#374151; }
+  .status-cancelled { background:#FEE2E2;color:#991B1B; }
+  .spinner { border:3px solid #f3f3f3;border-top:3px solid #D97706;border-radius:50%;width:24px;height:24px;animation:spin 0.8s linear infinite;display:inline-block; }
+  @keyframes spin { to{transform:rotate(360deg)} }
+  .new-ping { animation: ping-border 1s ease 3; }
+  @keyframes ping-border { 0%,100%{border-color:#D97706} 50%{border-color:#F59E0B;box-shadow:0 0 0 4px rgba(217,119,6,0.2)} }
 </style>
+
+<script type="module">
+import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
+import { getDatabase, ref, onValue, push, set, update, remove, get } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-database.js";
+
+// ╔══════════════════════════════════════════════════════════════════╗
+// ║           ⚙️  إعدادات الموقع — غيّر هذا السطر فقط            ║
+// ╠══════════════════════════════════════════════════════════════════╣
+// ║                                                                  ║
+// ║  ضع هنا الرابط الكامل لصفحة القائمة (customer-menu.html)       ║
+// ║  مثال:  https://مطعمك.com/customer-menu.html                    ║
+// ║  أو:    https://username.github.io/menu/customer-menu.html      ║
+// ║                                                                  ║
+const MENU_URL = "https://al-hafed2005.github.io/meno_cust";
+//                 ↑↑↑  غيّر هذا الرابط فقط  ↑↑↑
+//
+// ║  اسم المطعم                                                      ║
+const RESTAURANT_NAME = "منيو ديجيتال";
+// ╚══════════════════════════════════════════════════════════════════╝
+
+// ============================
+// Firebase Init
+// ============================
+const firebaseConfig = {
+  apiKey: "AIzaSyB8Qv_Enab2htMwLTHzzuvK13Gru8SSj5s",
+  authDomain: "admin-65750.firebaseapp.com",
+  databaseURL: "https://admin-65750-default-rtdb.firebaseio.com",
+  projectId: "admin-65750",
+  storageBucket: "admin-65750.firebasestorage.app",
+  messagingSenderId: "1071244429417",
+  appId: "1:1071244429417:web:f6ca187cf3db9cfafcfaf8",
+  measurementId: "G-BWGVTR0SYQ"
+};
+
+const app = initializeApp(firebaseConfig);
+const db = getDatabase(app);
+
+// ============================
+// STATE
+// ============================
+let categories = [];
+let items = [];
+let orders = [];
+let tables = [];
+let currentTab = 'dashboard';
+let selectedMenuCatId = null;
+let editingCatId = null;
+let editingItemId = null;
+let uploadedImageBase64 = '';
+let ordersFilter = 'all';
+let prevOrderCount = 0;
+
+// ============================
+// AUTH
+// ============================
+// تطبيق الإعدادات عند تسجيل الدخول
+function applyConfig() {
+  const el = document.getElementById('restaurant-name-sidebar');
+  if (el) el.textContent = RESTAURANT_NAME;
+}
+
+window.doLogin = function() {
+  const user = document.getElementById('login-user').value.trim();
+  const pass = document.getElementById('login-pass').value;
+  if (user === 'admin' && pass === 'admin123') {
+    document.getElementById('login-screen').classList.add('hidden');
+    document.getElementById('admin-app').classList.remove('hidden');
+    applyConfig();
+    startListeners();
+    showTab('dashboard');
+  } else {
+    document.getElementById('login-error').classList.remove('hidden');
+  }
+};
+document.getElementById('login-user').addEventListener('keydown', e => e.key==='Enter' && document.getElementById('login-pass').focus());
+document.getElementById('login-pass').addEventListener('keydown', e => e.key==='Enter' && window.doLogin());
+
+window.doLogout = function() {
+  document.getElementById('login-screen').classList.remove('hidden');
+  document.getElementById('admin-app').classList.add('hidden');
+};
+
+// ============================
+// FIREBASE LISTENERS
+// ============================
+function startListeners() {
+  onValue(ref(db, 'categories'), snap => {
+    categories = [];
+    snap.forEach(c => categories.push({ id: c.key, ...c.val() }));
+    categories.sort((a,b)=>(a.sortOrder||0)-(b.sortOrder||0));
+    if (currentTab==='dashboard') renderDashboard();
+    if (currentTab==='menu') renderCatList();
+  });
+
+  onValue(ref(db, 'items'), snap => {
+    items = [];
+    snap.forEach(c => items.push({ id: c.key, ...c.val() }));
+    if (currentTab==='dashboard') renderDashboard();
+    if (currentTab==='menu') renderAdminItems();
+  });
+
+  onValue(ref(db, 'tables'), snap => {
+    tables = [];
+    snap.forEach(c => tables.push({ id: c.key, ...c.val() }));
+    if (currentTab==='tables') renderTables();
+  });
+
+  onValue(ref(db, 'orders'), snap => {
+    const newOrders = [];
+    snap.forEach(c => newOrders.push({ id: c.key, ...c.val() }));
+    // Detect new orders
+    if (newOrders.length > prevOrderCount && prevOrderCount > 0) {
+      showNewOrderNotif();
+    }
+    prevOrderCount = newOrders.length;
+    orders = newOrders.reverse();
+    updatePendingBadge();
+    if (currentTab==='dashboard') renderDashboard();
+    if (currentTab==='orders') renderOrders();
+  });
+}
+
+function showNewOrderNotif() {
+  const notif = document.getElementById('new-order-notif');
+  notif.classList.remove('hidden');
+  // Play ping sound if supported
+  try { new Audio('data:audio/wav;base64,UklGRnoGAABXQVZFZm10IBAAAA...').play().catch(()=>{}); } catch(e) {}
+}
+
+function updatePendingBadge() {
+  const pending = orders.filter(o=>o.status==='pending').length;
+  const badge = document.getElementById('pending-badge');
+  if (pending>0) { badge.textContent=pending; badge.classList.remove('hidden'); }
+  else badge.classList.add('hidden');
+}
+
+// ============================
+// TABS
+// ============================
+const tabTitles = { dashboard:'لوحة التحكم', orders:'الطلبات', menu:'إدارة القائمة', tables:'الطاولات' };
+window.showTab = function(tab) {
+  currentTab = tab;
+  document.getElementById('page-title').textContent = tabTitles[tab];
+  document.querySelectorAll('.tab-content').forEach(el=>el.classList.add('hidden'));
+  document.querySelectorAll('.tab-btn').forEach(btn=>btn.classList.remove('active'));
+  document.getElementById('tab-'+tab).classList.remove('hidden');
+  document.querySelector(`[data-tab="${tab}"]`).classList.add('active');
+  if (tab==='dashboard') renderDashboard();
+  else if (tab==='orders') renderOrders();
+  else if (tab==='menu') renderMenuTab();
+  else if (tab==='tables') renderTables();
+};
+
+// ============================
+// DASHBOARD
+// ============================
+function renderDashboard() {
+  const total = orders.reduce((s,o)=>s+(parseFloat(o.total)||0),0);
+  const statsData = [
+    { label:'إجمالي الطلبات', value:orders.length, icon:'🛒', color:'text-amber-600' },
+    { label:'قيد الانتظار', value:orders.filter(o=>o.status==='pending').length, icon:'⏳', color:'text-yellow-600' },
+    { label:'يُحضَّر الآن', value:orders.filter(o=>o.status==='preparing').length, icon:'👨‍🍳', color:'text-blue-600' },
+    { label:'الإيرادات الكلية', value:total.toFixed(2)+' ر.س', icon:'💰', color:'text-green-600' },
+    { label:'عناصر القائمة', value:items.length, icon:'🍽️', color:'text-purple-600' },
+    { label:'التصنيفات', value:categories.length, icon:'🏷️', color:'text-pink-600' },
+    { label:'الطاولات', value:tables.length, icon:'🪑', color:'text-orange-600' },
+    { label:'جاهز للتقديم', value:orders.filter(o=>o.status==='ready').length, icon:'✅', color:'text-emerald-600' },
+  ];
+  document.getElementById('stats-grid').innerHTML = statsData.map(s=>`
+    <div class="bg-white rounded-2xl p-4 shadow-sm border border-gray-100 flex items-center gap-3">
+      <div class="text-2xl">${s.icon}</div>
+      <div><p class="${s.color} font-bold text-xl">${s.value}</p><p class="text-gray-500 text-xs">${s.label}</p></div>
+    </div>`).join('');
+
+  const recent = orders.slice(0,8);
+  document.getElementById('recent-orders-list').innerHTML = !recent.length
+    ? `<div class="text-center py-8 text-gray-400 text-sm">لا توجد طلبات بعد</div>`
+    : recent.map(o=>`
+    <div class="flex items-center justify-between px-5 py-3 border-b border-gray-50 last:border-0">
+      <div class="flex items-center gap-3">
+        <span class="font-mono text-xs text-gray-400">#${o.id.slice(-5)}</span>
+        <span class="text-sm font-medium">طاولة ${o.tableNumber}</span>
+        <span class="status-badge status-${o.status}">${statusLabel(o.status)}</span>
+      </div>
+      <span class="text-amber-600 font-bold text-sm">${parseFloat(o.total||0).toFixed(2)} ر.س</span>
+    </div>`).join('');
+}
+
+// ============================
+// ORDERS
+// ============================
+window.filterOrders = function(filter) {
+  ordersFilter = filter;
+  ['all','pending','preparing','ready','served'].forEach(f=>{
+    const btn=document.getElementById('filter-'+f);
+    if(btn) btn.className = f===filter
+      ? 'px-3 py-1 rounded-full text-xs font-medium bg-gray-800 text-white'
+      : 'px-3 py-1 rounded-full text-xs font-medium bg-gray-100 text-gray-600 hover:bg-gray-200';
+  });
+  renderOrders();
+};
+
+function renderOrders() {
+  let list = [...orders];
+  if (ordersFilter!=='all') list = list.filter(o=>o.status===ordersFilter);
+  const container = document.getElementById('orders-list');
+  const empty = document.getElementById('orders-empty');
+
+  if (!list.length) { container.innerHTML=''; empty.classList.remove('hidden'); return; }
+  empty.classList.add('hidden');
+
+  const nextStatus = { pending:'preparing', preparing:'ready', ready:'served' };
+  const nextLabel = { pending:'👨‍🍳 بدء التحضير', preparing:'✅ جاهز', ready:'🍽️ تم التقديم' };
+
+  container.innerHTML = list.map(o=>`
+    <div class="bg-white rounded-2xl border border-gray-100 shadow-sm overflow-hidden">
+      <div class="flex items-center justify-between px-5 py-3 border-b border-gray-50 flex-wrap gap-2">
+        <div class="flex items-center gap-3">
+          <span class="font-mono text-sm text-gray-400">#${o.id.slice(-5)}</span>
+          <span class="font-bold text-gray-800">طاولة ${o.tableNumber}</span>
+          <span class="status-badge status-${o.status}">${statusLabel(o.status)}</span>
+        </div>
+        <div class="flex items-center gap-2">
+          <span class="font-bold text-amber-600">${parseFloat(o.total||0).toFixed(2)} ر.س</span>
+          ${nextStatus[o.status] ? `<button onclick="updateOrderStatus('${o.id}','${nextStatus[o.status]}')" class="bg-amber-600 text-white text-xs px-3 py-1.5 rounded-xl hover:bg-amber-700">${nextLabel[o.status]}</button>` : ''}
+          ${o.status!=='cancelled'&&o.status!=='served' ? `<button onclick="updateOrderStatus('${o.id}','cancelled')" class="bg-red-100 text-red-600 text-xs px-3 py-1.5 rounded-xl hover:bg-red-200">إلغاء</button>` : ''}
+        </div>
+      </div>
+      <div class="px-5 py-3">
+        <div class="flex flex-wrap gap-2 mb-2">
+          ${(o.items||[]).map(i=>`<span class="text-xs bg-gray-100 px-2 py-1 rounded-lg">${i.name} × ${i.qty} — ${(parseFloat(i.price)*i.qty).toFixed(2)} ر.س</span>`).join('')}
+        </div>
+        ${o.notes?`<p class="text-xs text-gray-400">ملاحظات: ${o.notes}</p>`:''}
+        <p class="text-xs text-gray-300 mt-1">${new Date(o.createdAt).toLocaleString('ar-SA')}</p>
+      </div>
+    </div>`).join('');
+}
+
+window.updateOrderStatus = async function(orderId, newStatus) {
+  await update(ref(db,'orders/'+orderId), { status: newStatus });
+};
+
+function statusLabel(s) {
+  return { pending:'انتظار', preparing:'يُحضَّر', ready:'جاهز', served:'قُدِّم', cancelled:'ملغي' }[s] || s;
+}
+
+// ============================
+// MENU
+// ============================
+function renderMenuTab() { renderCatList(); renderAdminItems(); }
+
+function renderCatList() {
+  document.getElementById('cat-list').innerHTML = categories.map(cat=>`
+    <div onclick="selectMenuCat('${cat.id}')" class="flex items-center justify-between px-3 py-2.5 rounded-xl cursor-pointer group transition-colors ${selectedMenuCatId===cat.id?'bg-amber-600 text-white':'hover:bg-gray-50'}">
+      <span class="text-sm font-medium">${cat.icon||''} ${cat.name}</span>
+      <div class="flex gap-1 opacity-0 group-hover:opacity-100">
+        <button onclick="event.stopPropagation();openCatDialog('${cat.id}')" class="p-1 rounded hover:bg-black/10 text-xs">✏️</button>
+        <button onclick="event.stopPropagation();deleteCat('${cat.id}')" class="p-1 rounded hover:bg-black/10 text-xs">🗑️</button>
+      </div>
+    </div>`).join('');
+}
+
+window.selectMenuCat = function(catId) {
+  selectedMenuCatId = catId;
+  const cat = categories.find(c=>c.id===catId);
+  document.getElementById('items-panel-title').textContent = 'عناصر: '+(cat?cat.name:'');
+  document.getElementById('add-item-btn').classList.remove('hidden');
+  renderCatList();
+  renderAdminItems();
+};
+
+function renderAdminItems() {
+  const placeholder = document.getElementById('items-placeholder');
+  const grid = document.getElementById('items-grid-admin');
+  if (!selectedMenuCatId) { placeholder.classList.remove('hidden'); grid.classList.add('hidden'); return; }
+  placeholder.classList.add('hidden');
+  grid.classList.remove('hidden');
+
+  const catItems = items.filter(i=>i.categoryId===selectedMenuCatId);
+  if (!catItems.length) {
+    grid.innerHTML=`<div class="col-span-3 text-center py-12 text-gray-300"><div class="text-4xl mb-2">🍽️</div><p class="text-sm">لا توجد عناصر</p></div>`;
+    return;
+  }
+  grid.innerHTML = catItems.map(item=>`
+    <div class="border border-gray-100 rounded-xl overflow-hidden bg-white">
+      <div class="aspect-video bg-gray-100 flex items-center justify-center overflow-hidden relative">
+        ${item.image?`<img src="${item.image}" class="w-full h-full object-cover" />`:'<span class="text-3xl opacity-20">🍽️</span>'}
+        ${!item.available?'<div class="absolute inset-0 bg-black/40 flex items-center justify-center"><span class="text-white text-xs bg-black/50 px-2 py-1 rounded">غير متاح</span></div>':''}
+      </div>
+      <div class="p-3">
+        <div class="flex justify-between gap-1 mb-1">
+          <p class="font-bold text-sm truncate">${item.name}</p>
+          <p class="text-amber-600 font-bold text-sm flex-shrink-0">${parseFloat(item.price).toFixed(2)} ر.س</p>
+        </div>
+        <p class="text-xs text-gray-400 truncate mb-2">${item.desc||''}</p>
+        <div class="flex items-center justify-between border-t border-gray-50 pt-2">
+          <label class="flex items-center gap-1.5 cursor-pointer">
+            <input type="checkbox" ${item.available!==false?'checked':''} onchange="toggleItemAvailability('${item.id}')" class="accent-amber-600" />
+            <span class="text-xs text-gray-500">${item.available!==false?'متاح':'غير متاح'}</span>
+          </label>
+          <div class="flex gap-1">
+            <button onclick="openItemDialog('${item.id}')" class="text-xs p-1.5 hover:bg-gray-100 rounded-lg">✏️</button>
+            <button onclick="deleteItem('${item.id}')" class="text-xs p-1.5 hover:bg-red-50 rounded-lg text-red-400">🗑️</button>
+          </div>
+        </div>
+      </div>
+    </div>`).join('');
+}
+
+window.toggleItemAvailability = async function(itemId) {
+  const item = items.find(i=>i.id===itemId);
+  if (item) await update(ref(db,'items/'+itemId), { available: !item.available });
+};
+
+// Cat CRUD
+window.openCatDialog = function(catId=null) {
+  editingCatId = catId;
+  const cat = catId ? categories.find(c=>c.id===catId) : null;
+  document.getElementById('cat-dialog-title').textContent = catId?'تعديل التصنيف':'إضافة تصنيف';
+  document.getElementById('cat-name').value = cat?cat.name:'';
+  document.getElementById('cat-icon').value = cat?(cat.icon||''):'';
+  document.getElementById('cat-dialog').classList.remove('hidden');
+};
+window.closeCatDialog = function() { document.getElementById('cat-dialog').classList.add('hidden'); editingCatId=null; };
+window.saveCat = async function() {
+  const name = document.getElementById('cat-name').value.trim();
+  if (!name) return alert('أدخل اسم التصنيف');
+  const icon = document.getElementById('cat-icon').value.trim();
+  const data = { name, icon, sortOrder: categories.length };
+  if (editingCatId) {
+    await update(ref(db,'categories/'+editingCatId), data);
+  } else {
+    await push(ref(db,'categories'), data);
+  }
+  window.closeCatDialog();
+};
+window.deleteCat = async function(catId) {
+  if (!confirm('حذف هذا التصنيف وجميع عناصره؟')) return;
+  await remove(ref(db,'categories/'+catId));
+  // Delete items in this category
+  const catItems = items.filter(i=>i.categoryId===catId);
+  for (const item of catItems) await remove(ref(db,'items/'+item.id));
+  if (selectedMenuCatId===catId) { selectedMenuCatId=null; document.getElementById('add-item-btn').classList.add('hidden'); }
+};
+
+// Item CRUD
+window.openItemDialog = function(itemId=null) {
+  editingItemId = itemId;
+  uploadedImageBase64 = '';
+  const item = itemId ? items.find(i=>i.id===itemId) : null;
+  document.getElementById('item-dialog-title').textContent = itemId?'تعديل العنصر':'إضافة عنصر';
+  document.getElementById('item-name').value = item?item.name:'';
+  document.getElementById('item-price').value = item?item.price:'';
+  document.getElementById('item-desc').value = item?(item.desc||''):'';
+  document.getElementById('item-available').checked = item?item.available!==false:true;
+
+  const preview = document.getElementById('item-img-preview');
+  if (item&&item.image) { preview.innerHTML=`<img src="${item.image}" class="w-full h-full object-cover" />`; uploadedImageBase64=item.image; }
+  else { preview.innerHTML='📷'; }
+
+  const catSel = document.getElementById('item-cat');
+  catSel.innerHTML = categories.map(c=>`<option value="${c.id}" ${(item?item.categoryId:selectedMenuCatId)===c.id?'selected':''}>${c.icon||''} ${c.name}</option>`).join('');
+  document.getElementById('item-dialog').classList.remove('hidden');
+};
+window.closeItemDialog = function() { document.getElementById('item-dialog').classList.add('hidden'); editingItemId=null; };
+
+window.handleImageUpload = function(e) {
+  const file = e.target.files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = ev => {
+    const img = new Image();
+    img.onload = () => {
+      const canvas = document.createElement('canvas');
+      let w=img.width, h=img.height;
+      if (w>400) { h=h*400/w; w=400; }
+      canvas.width=w; canvas.height=h;
+      canvas.getContext('2d').drawImage(img,0,0,w,h);
+      const b64 = canvas.toDataURL('image/jpeg', 0.7);
+      uploadedImageBase64 = b64;
+      document.getElementById('item-img-preview').innerHTML=`<img src="${b64}" class="w-full h-full object-cover" />`;
+    };
+    img.src = ev.target.result;
+  };
+  reader.readAsDataURL(file);
+};
+
+window.saveItem = async function() {
+  const name = document.getElementById('item-name').value.trim();
+  const price = parseFloat(document.getElementById('item-price').value);
+  const desc = document.getElementById('item-desc').value.trim();
+  const categoryId = document.getElementById('item-cat').value;
+  const available = document.getElementById('item-available').checked;
+  if (!name||!price) return alert('أدخل الاسم والسعر');
+
+  const data = { name, price, desc, categoryId, available };
+  if (uploadedImageBase64) data.image = uploadedImageBase64;
+  else if (editingItemId) {
+    const existing = items.find(i=>i.id===editingItemId);
+    if (existing&&existing.image) data.image = existing.image;
+  }
+
+  if (editingItemId) {
+    await update(ref(db,'items/'+editingItemId), data);
+  } else {
+    await push(ref(db,'items'), data);
+  }
+  window.closeItemDialog();
+};
+
+window.deleteItem = async function(itemId) {
+  if (!confirm('حذف هذا العنصر؟')) return;
+  await remove(ref(db,'items/'+itemId));
+};
+
+// ============================
+// TABLES
+// ============================
+function renderTables() {
+  document.getElementById('tables-grid').innerHTML = tables.map(t=>`
+    <div class="bg-white rounded-2xl p-5 shadow-sm border border-gray-100 text-center">
+      <div class="text-3xl font-bold text-gray-800 mb-1">${t.number}</div>
+      <p class="text-sm text-gray-500 mb-3">${t.label||'طاولة '+t.number}</p>
+      <div class="bg-gray-50 rounded-xl p-3 mb-3 flex items-center justify-center">
+        <img src="https://api.qrserver.com/v1/create-qr-code/?size=120x120&data=${encodeURIComponent(MENU_URL+'?table='+t.number)}"
+          alt="QR" class="w-28 h-28" />
+      </div>
+      <p class="text-xs text-gray-400 mb-2 break-all">${MENU_URL}?table=${t.number}</p>
+      <div class="flex gap-2">
+        <a href="https://api.qrserver.com/v1/create-qr-code/?size=300x300&data=${encodeURIComponent(MENU_URL+'?table='+t.number)}"
+          download="table-${t.number}-qr.png" target="_blank"
+          class="flex-1 bg-amber-600 text-white text-xs py-2 rounded-xl hover:bg-amber-700 flex items-center justify-center">⬇️ تحميل</a>
+        <button onclick="deleteTable('${t.id}')" class="px-3 bg-red-50 text-red-500 text-xs py-2 rounded-xl hover:bg-red-100">🗑️</button>
+      </div>
+    </div>`).join('');
+}
+
+window.addTable = async function() {
+  const num = parseInt(document.getElementById('new-table-num').value);
+  const label = document.getElementById('new-table-label').value.trim();
+  if (!num||num<1) return alert('أدخل رقم صحيح');
+  if (tables.find(t=>t.number===num)) return alert('هذا الرقم مستخدم بالفعل');
+  await push(ref(db,'tables'), { number: num, label: label||'طاولة '+num });
+  document.getElementById('new-table-num').value='';
+  document.getElementById('new-table-label').value='';
+};
+
+window.deleteTable = async function(tableId) {
+  if (!confirm('حذف هذه الطاولة؟')) return;
+  await remove(ref(db,'tables/'+tableId));
+};
+
+// ============================
+// SEED DEFAULT DATA
+// ============================
+async function seedIfEmpty() {
+  const snap = await get(ref(db,'categories'));
+  if (snap.exists()) return;
+
+  const defaultCats = [
+    { name:'المقبلات', icon:'🥗', sortOrder:1 },
+    { name:'الأطباق الرئيسية', icon:'🍽️', sortOrder:2 },
+    { name:'المشويات', icon:'🔥', sortOrder:3 },
+    { name:'المشروبات', icon:'☕', sortOrder:4 },
+    { name:'الحلويات', icon:'🍰', sortOrder:5 },
+  ];
+  const catRefs = {};
+  for (const cat of defaultCats) {
+    const r = await push(ref(db,'categories'), cat);
+    catRefs[cat.name] = r.key;
+  }
+
+  const defaultItems = [
+    { name:'حمص', desc:'حمص كريمي بزيت الزيتون', price:18, categoryId:catRefs['المقبلات'], available:true },
+    { name:'سلطة فتوش', desc:'سلطة خضار طازجة مع خبز محمص', price:22, categoryId:catRefs['المقبلات'], available:true },
+    { name:'كبسة دجاج', desc:'أرز كبسة تقليدي مع دجاج مشوي', price:65, categoryId:catRefs['الأطباق الرئيسية'], available:true },
+    { name:'مندي لحم', desc:'لحم مطهو ببطء مع الأرز والتوابل', price:85, categoryId:catRefs['الأطباق الرئيسية'], available:true },
+    { name:'مشاوي مشكلة', desc:'تشكيلة من أجود اللحوم المشوية', price:95, categoryId:catRefs['المشويات'], available:true },
+    { name:'دجاج مشوي', desc:'دجاجة كاملة متبلة ومشوية على الفحم', price:55, categoryId:catRefs['المشويات'], available:true },
+    { name:'قهوة عربية', desc:'قهوة عربية أصيلة مع التمر', price:12, categoryId:catRefs['المشروبات'], available:true },
+    { name:'عصير طازج', desc:'عصير فواكه طازج موسمي', price:18, categoryId:catRefs['المشروبات'], available:true },
+    { name:'أم علي', desc:'حلوى أم علي بالمكسرات والقشطة', price:28, categoryId:catRefs['الحلويات'], available:true },
+    { name:'كنافة', desc:'كنافة بالجبن والقطر على الوجه', price:32, categoryId:catRefs['الحلويات'], available:true },
+  ];
+  for (const item of defaultItems) await push(ref(db,'items'), item);
+
+  const defaultTables = [1,2,3,4,5,6,7,8];
+  for (const n of defaultTables) await push(ref(db,'tables'), { number:n, label:'طاولة '+n });
+
+  alert('تم إضافة البيانات الافتراضية للمرة الأولى ✅');
+}
+
+// Start seeding check on load
+seedIfEmpty().catch(console.error);
+
+</script>
 </head>
 <body class="bg-gray-100 min-h-screen">
 
@@ -45,11 +538,11 @@ tailwind.config = {
     <div class="bg-white rounded-2xl p-6 shadow-2xl">
       <div class="mb-4">
         <label class="block text-sm font-medium text-gray-700 mb-1.5">اسم المستخدم</label>
-        <input id="login-user" type="text" value="admin" class="w-full border border-gray-200 rounded-xl px-4 py-2.5 text-right focus:outline-none focus:ring-2 focus:ring-amber-500" placeholder="admin" />
+        <input id="login-user" type="text" value="admin" class="w-full border border-gray-200 rounded-xl px-4 py-2.5 text-right focus:outline-none focus:ring-2 focus:ring-amber-500" />
       </div>
       <div class="mb-5">
         <label class="block text-sm font-medium text-gray-700 mb-1.5">كلمة المرور</label>
-        <input id="login-pass" type="password" value="admin123" class="w-full border border-gray-200 rounded-xl px-4 py-2.5 text-right focus:outline-none focus:ring-2 focus:ring-amber-500" placeholder="••••••••" />
+        <input id="login-pass" type="password" value="admin123" class="w-full border border-gray-200 rounded-xl px-4 py-2.5 text-right focus:outline-none focus:ring-2 focus:ring-amber-500" />
       </div>
       <div id="login-error" class="hidden mb-3 text-red-500 text-sm text-center">اسم المستخدم أو كلمة المرور غير صحيحة</div>
       <button onclick="doLogin()" class="w-full bg-amber-600 hover:bg-amber-700 text-white font-bold py-3 rounded-xl transition-colors">تسجيل الدخول</button>
@@ -60,19 +553,22 @@ tailwind.config = {
 <!-- ADMIN APP -->
 <div id="admin-app" class="hidden min-h-screen flex">
   <!-- Sidebar -->
-  <aside class="w-56 bg-[#1C1410] flex flex-col flex-shrink-0 fixed h-full">
+  <aside class="w-56 bg-[#1C1410] flex flex-col flex-shrink-0 fixed h-full z-10">
     <div class="p-5 border-b border-white/10">
       <div class="flex items-center gap-3">
         <div class="w-9 h-9 rounded-xl bg-amber-600/20 flex items-center justify-center text-amber-500">🍽️</div>
         <div>
-          <p class="font-bold text-white text-sm">منيو ديجيتال</p>
+          <p class="font-bold text-white text-sm" id="restaurant-name-sidebar">منيو ديجيتال</p>
           <p class="text-white/40 text-xs">لوحة الإدارة</p>
         </div>
       </div>
     </div>
     <nav class="flex-1 p-4 space-y-1">
       <button onclick="showTab('dashboard')" class="tab-btn w-full text-right px-3 py-2.5 rounded-xl text-sm font-medium text-white/70 hover:bg-white/10 flex items-center gap-3" data-tab="dashboard">📊 لوحة التحكم</button>
-      <button onclick="showTab('orders')" class="tab-btn w-full text-right px-3 py-2.5 rounded-xl text-sm font-medium text-white/70 hover:bg-white/10 flex items-center gap-3" data-tab="orders">🛒 الطلبات <span id="pending-badge" class="hidden mr-auto bg-red-500 text-white text-xs px-1.5 py-0.5 rounded-full"></span></button>
+      <button onclick="showTab('orders')" class="tab-btn w-full text-right px-3 py-2.5 rounded-xl text-sm font-medium text-white/70 hover:bg-white/10 flex items-center gap-3" data-tab="orders">
+        🛒 الطلبات
+        <span id="pending-badge" class="hidden mr-auto bg-red-500 text-white text-xs px-1.5 py-0.5 rounded-full"></span>
+      </button>
       <button onclick="showTab('menu')" class="tab-btn w-full text-right px-3 py-2.5 rounded-xl text-sm font-medium text-white/70 hover:bg-white/10 flex items-center gap-3" data-tab="menu">🍽️ إدارة القائمة</button>
       <button onclick="showTab('tables')" class="tab-btn w-full text-right px-3 py-2.5 rounded-xl text-sm font-medium text-white/70 hover:bg-white/10 flex items-center gap-3" data-tab="tables">🪑 الطاولات</button>
     </nav>
@@ -81,30 +577,28 @@ tailwind.config = {
     </div>
   </aside>
 
-  <!-- Main Content -->
+  <!-- Main -->
   <div class="flex-1 mr-56 flex flex-col min-h-screen">
     <header class="bg-white border-b border-gray-200 px-6 py-3 flex items-center justify-between sticky top-0 z-30">
       <h1 id="page-title" class="font-semibold text-gray-800">لوحة التحكم</h1>
-      <div id="new-order-notif" class="hidden new-order-alert bg-amber-600 text-white text-sm font-medium px-4 py-2 rounded-xl flex items-center gap-2">
+      <div id="new-order-notif" class="hidden bg-amber-600 text-white text-sm font-medium px-4 py-2 rounded-xl flex items-center gap-2">
         🔔 طلب جديد!
         <button onclick="document.getElementById('new-order-notif').classList.add('hidden');showTab('orders')" class="text-xs underline">عرض</button>
       </div>
     </header>
 
-    <!-- DASHBOARD TAB -->
+    <!-- DASHBOARD -->
     <div id="tab-dashboard" class="tab-content hidden p-6">
       <div id="stats-grid" class="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-6"></div>
       <div class="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
-        <div class="px-5 py-4 border-b border-gray-100">
-          <h3 class="font-semibold text-gray-800">آخر الطلبات</h3>
-        </div>
-        <div id="recent-orders-list" class="divide-y divide-gray-50"></div>
+        <div class="px-5 py-4 border-b border-gray-100"><h3 class="font-semibold text-gray-800">آخر الطلبات</h3></div>
+        <div id="recent-orders-list"></div>
       </div>
     </div>
 
-    <!-- ORDERS TAB -->
+    <!-- ORDERS -->
     <div id="tab-orders" class="tab-content hidden p-6">
-      <div class="flex items-center gap-2 mb-4">
+      <div class="flex items-center gap-2 mb-4 flex-wrap">
         <span class="text-sm text-gray-500">فلتر:</span>
         <button onclick="filterOrders('all')" id="filter-all" class="px-3 py-1 rounded-full text-xs font-medium bg-gray-800 text-white">الكل</button>
         <button onclick="filterOrders('pending')" id="filter-pending" class="px-3 py-1 rounded-full text-xs font-medium bg-gray-100 text-gray-600 hover:bg-gray-200">انتظار</button>
@@ -114,28 +608,25 @@ tailwind.config = {
       </div>
       <div id="orders-list" class="space-y-3"></div>
       <div id="orders-empty" class="hidden text-center py-16 text-gray-400">
-        <div class="text-4xl mb-3">🛒</div>
-        <p>لا توجد طلبات</p>
+        <div class="text-4xl mb-3">🛒</div><p>لا توجد طلبات</p>
       </div>
     </div>
 
-    <!-- MENU TAB -->
-    <div id="tab-menu" class="tab-content hidden p-6 flex gap-5 h-[calc(100vh-65px)]">
-      <!-- Categories -->
+    <!-- MENU -->
+    <div id="tab-menu" class="tab-content hidden p-6 flex gap-5" style="height:calc(100vh - 65px)">
       <div class="w-56 flex-shrink-0 bg-white rounded-2xl border border-gray-100 shadow-sm flex flex-col overflow-hidden">
         <div class="px-4 py-3 border-b border-gray-100 flex items-center justify-between">
           <span class="font-semibold text-sm">التصنيفات</span>
-          <button onclick="openCatDialog()" class="w-7 h-7 rounded-lg bg-amber-600 text-white flex items-center justify-center hover:bg-amber-700 text-lg">+</button>
+          <button onclick="openCatDialog()" class="w-7 h-7 rounded-lg bg-amber-600 text-white flex items-center justify-center hover:bg-amber-700 text-lg leading-none">+</button>
         </div>
         <div id="cat-list" class="flex-1 overflow-y-auto p-2 space-y-1"></div>
       </div>
-      <!-- Items -->
       <div class="flex-1 bg-white rounded-2xl border border-gray-100 shadow-sm flex flex-col overflow-hidden">
         <div class="px-5 py-3 border-b border-gray-100 flex items-center justify-between">
           <span id="items-panel-title" class="font-semibold text-sm">اختر تصنيفاً</span>
-          <button id="add-item-btn" onclick="openItemDialog()" class="hidden bg-amber-600 text-white text-xs px-3 py-1.5 rounded-xl hover:bg-amber-700 flex items-center gap-1">+ إضافة عنصر</button>
+          <button id="add-item-btn" onclick="openItemDialog()" class="hidden bg-amber-600 text-white text-xs px-3 py-1.5 rounded-xl hover:bg-amber-700">+ إضافة عنصر</button>
         </div>
-        <div id="items-list" class="flex-1 overflow-y-auto p-4">
+        <div class="flex-1 overflow-y-auto p-4">
           <div id="items-placeholder" class="h-full flex items-center justify-center text-gray-300">
             <div class="text-center"><div class="text-5xl mb-3">🍽️</div><p class="text-sm">اختر تصنيفاً لعرض عناصره</p></div>
           </div>
@@ -144,11 +635,11 @@ tailwind.config = {
       </div>
     </div>
 
-    <!-- TABLES TAB -->
+    <!-- TABLES -->
     <div id="tab-tables" class="tab-content hidden p-6">
-      <div class="flex items-center gap-3 mb-5">
-        <input id="new-table-num" type="number" min="1" placeholder="رقم الطاولة" class="border border-gray-200 rounded-xl px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-amber-500 w-40 text-right" />
-        <input id="new-table-label" type="text" placeholder="وصف (اختياري)" class="border border-gray-200 rounded-xl px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-amber-500 w-48 text-right" />
+      <div class="flex items-center gap-3 mb-5 flex-wrap">
+        <input id="new-table-num" type="number" min="1" placeholder="رقم الطاولة" class="border border-gray-200 rounded-xl px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-amber-500 w-36 text-right" />
+        <input id="new-table-label" type="text" placeholder="وصف (اختياري)" class="border border-gray-200 rounded-xl px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-amber-500 w-44 text-right" />
         <button onclick="addTable()" class="bg-amber-600 text-white px-4 py-2 rounded-xl text-sm font-medium hover:bg-amber-700">+ إضافة طاولة</button>
       </div>
       <div id="tables-grid" class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4"></div>
@@ -161,7 +652,7 @@ tailwind.config = {
   <div class="bg-white rounded-2xl p-6 w-full max-w-sm shadow-2xl">
     <h3 id="cat-dialog-title" class="font-bold text-lg mb-4">إضافة تصنيف</h3>
     <input id="cat-name" type="text" placeholder="اسم التصنيف" class="w-full border border-gray-200 rounded-xl px-3 py-2.5 text-right focus:outline-none focus:ring-2 focus:ring-amber-500 mb-3 text-sm" />
-    <input id="cat-icon" type="text" placeholder="أيقونة (اختياري، مثال: 🍕)" class="w-full border border-gray-200 rounded-xl px-3 py-2.5 text-right focus:outline-none focus:ring-2 focus:ring-amber-500 mb-4 text-sm" />
+    <input id="cat-icon" type="text" placeholder="أيقونة (مثال: 🍕)" class="w-full border border-gray-200 rounded-xl px-3 py-2.5 text-right focus:outline-none focus:ring-2 focus:ring-amber-500 mb-4 text-sm" />
     <div class="flex gap-2">
       <button onclick="saveCat()" class="flex-1 bg-amber-600 text-white font-bold py-2.5 rounded-xl hover:bg-amber-700">حفظ</button>
       <button onclick="closeCatDialog()" class="flex-1 bg-gray-100 text-gray-600 font-medium py-2.5 rounded-xl hover:bg-gray-200">إلغاء</button>
@@ -192,19 +683,19 @@ tailwind.config = {
       <select id="item-cat" class="w-full border border-gray-200 rounded-xl px-3 py-2 text-right focus:outline-none focus:ring-2 focus:ring-amber-500 text-sm bg-white"></select>
     </div>
     <div class="mb-4">
-      <label class="text-xs font-medium text-gray-600 block mb-1">الصورة</label>
+      <label class="text-xs font-medium text-gray-600 block mb-1">الصورة (تُحفظ في Firebase)</label>
       <div class="flex items-center gap-3">
         <div id="item-img-preview" class="w-16 h-16 rounded-xl bg-gray-100 flex items-center justify-center text-2xl flex-shrink-0 overflow-hidden">📷</div>
         <label class="flex-1 flex items-center justify-center gap-2 border-2 border-dashed border-gray-200 rounded-xl p-3 cursor-pointer hover:border-amber-400 hover:bg-amber-50 transition-colors text-sm text-gray-500">
           📷 رفع صورة
-          <input type="file" accept="image/*" onchange="handleImageUpload(event)" />
+          <input type="file" accept="image/*" onchange="handleImageUpload(event)" style="display:none" />
         </label>
       </div>
     </div>
     <div class="flex items-center gap-3 mb-4">
       <label class="relative inline-flex cursor-pointer items-center">
         <input id="item-available" type="checkbox" checked class="sr-only peer" />
-        <div class="w-10 h-6 bg-gray-200 rounded-full peer peer-checked:bg-amber-600 after:absolute after:top-0.5 after:right-0.5 after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:after:translate-x-[-16px]"></div>
+        <div class="w-10 h-6 bg-gray-200 rounded-full peer peer-checked:bg-amber-600 relative after:content-[''] after:absolute after:top-0.5 after:right-0.5 after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:after:translate-x-[-16px]"></div>
       </label>
       <span class="text-sm font-medium text-gray-700">متاح للطلب</span>
     </div>
@@ -215,501 +706,5 @@ tailwind.config = {
   </div>
 </div>
 
-<script>
-// ============================
-// DATA
-// ============================
-const MENU_KEY = 'digitalMenu_items';
-const CATS_KEY = 'digitalMenu_categories';
-const ORDERS_KEY = 'digitalMenu_orders';
-const TABLES_KEY = 'digitalMenu_tables';
-
-const DEFAULT_CATEGORIES = [
-  { id: 1, name: 'المقبلات', icon: '🥗' },
-  { id: 2, name: 'الأطباق الرئيسية', icon: '🍽️' },
-  { id: 3, name: 'المشويات', icon: '🔥' },
-  { id: 4, name: 'المشروبات', icon: '☕' },
-  { id: 5, name: 'الحلويات', icon: '🍰' },
-];
-
-const DEFAULT_ITEMS = [
-  { id: 1, name: 'حمص', desc: 'حمص كريمي بزيت الزيتون', price: 18, categoryId: 1, available: true, image: '' },
-  { id: 2, name: 'سلطة فتوش', desc: 'سلطة خضار طازجة مع خبز محمص', price: 22, categoryId: 1, available: true, image: '' },
-  { id: 3, name: 'كبسة دجاج', desc: 'أرز كبسة تقليدي مع دجاج مشوي', price: 65, categoryId: 2, available: true, image: '' },
-  { id: 4, name: 'مندي لحم', desc: 'لحم مطهو ببطء مع الأرز والتوابل', price: 85, categoryId: 2, available: true, image: '' },
-  { id: 5, name: 'مشاوي مشكلة', desc: 'تشكيلة من أجود اللحوم المشوية', price: 95, categoryId: 3, available: true, image: '' },
-  { id: 6, name: 'دجاج مشوي', desc: 'دجاجة كاملة متبلة ومشوية على الفحم', price: 55, categoryId: 3, available: true, image: '' },
-  { id: 7, name: 'قهوة عربية', desc: 'قهوة عربية أصيلة مع التمر', price: 12, categoryId: 4, available: true, image: '' },
-  { id: 8, name: 'عصير طازج', desc: 'عصير فواكه طازج موسمي', price: 18, categoryId: 4, available: true, image: '' },
-  { id: 9, name: 'أم علي', desc: 'حلوى أم علي بالمكسرات والقشطة', price: 28, categoryId: 5, available: true, image: '' },
-  { id: 10, name: 'كنافة', desc: 'كنافة بالجبن والقطر على الوجه', price: 32, categoryId: 5, available: true, image: '' },
-];
-
-const DEFAULT_TABLES = [
-  { id: 1, number: 1, label: 'طاولة 1' },
-  { id: 2, number: 2, label: 'طاولة 2' },
-  { id: 3, number: 3, label: 'طاولة 3' },
-  { id: 4, number: 4, label: 'طاولة 4' },
-  { id: 5, number: 5, label: 'طاولة 5' },
-  { id: 6, number: 6, label: 'طاولة 6' },
-  { id: 7, number: 7, label: 'طاولة 7' },
-  { id: 8, number: 8, label: 'طاولة 8' },
-];
-
-function getCategories() { try { return JSON.parse(localStorage.getItem(CATS_KEY)) || DEFAULT_CATEGORIES; } catch { return DEFAULT_CATEGORIES; } }
-function getItems() { try { return JSON.parse(localStorage.getItem(MENU_KEY)) || DEFAULT_ITEMS; } catch { return DEFAULT_ITEMS; } }
-function getOrders() { try { return JSON.parse(localStorage.getItem(ORDERS_KEY)) || []; } catch { return []; } }
-function getTables() { try { return JSON.parse(localStorage.getItem(TABLES_KEY)) || DEFAULT_TABLES; } catch { return DEFAULT_TABLES; } }
-function saveCats(d) { localStorage.setItem(CATS_KEY, JSON.stringify(d)); }
-function saveItems(d) { localStorage.setItem(MENU_KEY, JSON.stringify(d)); }
-function saveOrders(d) { localStorage.setItem(ORDERS_KEY, JSON.stringify(d)); }
-function saveTables(d) { localStorage.setItem(TABLES_KEY, JSON.stringify(d)); }
-
-// ============================
-// AUTH
-// ============================
-let isLoggedIn = false;
-
-function doLogin() {
-  const user = document.getElementById('login-user').value.trim();
-  const pass = document.getElementById('login-pass').value;
-  if (user === 'admin' && pass === 'admin123') {
-    isLoggedIn = true;
-    document.getElementById('login-screen').classList.add('hidden');
-    document.getElementById('admin-app').classList.remove('hidden');
-    showTab('dashboard');
-    startOrderPolling();
-  } else {
-    document.getElementById('login-error').classList.remove('hidden');
-  }
-}
-
-document.getElementById('login-user').addEventListener('keydown', e => e.key === 'Enter' && document.getElementById('login-pass').focus());
-document.getElementById('login-pass').addEventListener('keydown', e => e.key === 'Enter' && doLogin());
-
-function doLogout() {
-  isLoggedIn = false;
-  document.getElementById('login-screen').classList.remove('hidden');
-  document.getElementById('admin-app').classList.add('hidden');
-}
-
-// ============================
-// TABS
-// ============================
-let currentTab = 'dashboard';
-const tabTitles = { dashboard: 'لوحة التحكم', orders: 'الطلبات', menu: 'إدارة القائمة', tables: 'الطاولات' };
-
-function showTab(tab) {
-  currentTab = tab;
-  document.getElementById('page-title').textContent = tabTitles[tab];
-  document.querySelectorAll('.tab-content').forEach(el => el.classList.add('hidden'));
-  document.querySelectorAll('.tab-btn').forEach(btn => btn.classList.remove('active', 'text-white', 'bg-amber-600'));
-  document.getElementById('tab-' + tab).classList.remove('hidden');
-  document.querySelector(`[data-tab="${tab}"]`).classList.add('active');
-
-  if (tab === 'dashboard') renderDashboard();
-  else if (tab === 'orders') renderOrders();
-  else if (tab === 'menu') renderMenuTab();
-  else if (tab === 'tables') renderTables();
-}
-
-// ============================
-// DASHBOARD
-// ============================
-function renderDashboard() {
-  const orders = getOrders();
-  const items = getItems();
-  const cats = getCategories();
-  const tables = getTables();
-  const total = orders.reduce((s, o) => s + (o.total || 0), 0);
-
-  const statsData = [
-    { label: 'إجمالي الطلبات', value: orders.length, icon: '🛒', color: 'text-amber-600' },
-    { label: 'قيد الانتظار', value: orders.filter(o => o.status === 'pending').length, icon: '⏳', color: 'text-yellow-600' },
-    { label: 'يُحضَّر الآن', value: orders.filter(o => o.status === 'preparing').length, icon: '👨‍🍳', color: 'text-blue-600' },
-    { label: 'الإيرادات الكلية', value: total.toFixed(2) + ' ر.س', icon: '💰', color: 'text-green-600' },
-    { label: 'عناصر القائمة', value: items.length, icon: '🍽️', color: 'text-purple-600' },
-    { label: 'التصنيفات', value: cats.length, icon: '🏷️', color: 'text-pink-600' },
-    { label: 'الطاولات', value: tables.length, icon: '🪑', color: 'text-orange-600' },
-    { label: 'جاهز للتقديم', value: orders.filter(o => o.status === 'ready').length, icon: '✅', color: 'text-emerald-600' },
-  ];
-
-  document.getElementById('stats-grid').innerHTML = statsData.map(s => `
-    <div class="bg-white rounded-2xl p-4 shadow-sm border border-gray-100 flex items-center gap-3">
-      <div class="text-2xl">${s.icon}</div>
-      <div>
-        <p class="${s.color} font-bold text-xl">${s.value}</p>
-        <p class="text-gray-500 text-xs">${s.label}</p>
-      </div>
-    </div>`).join('');
-
-  const recent = [...orders].reverse().slice(0, 8);
-  document.getElementById('recent-orders-list').innerHTML = !recent.length
-    ? `<div class="text-center py-8 text-gray-400 text-sm">لا توجد طلبات بعد</div>`
-    : recent.map(o => `
-    <div class="flex items-center justify-between px-5 py-3">
-      <div class="flex items-center gap-3">
-        <span class="font-mono text-xs text-gray-400">#${String(o.id).slice(-4)}</span>
-        <span class="text-sm font-medium">طاولة ${o.tableNumber}</span>
-        <span class="status-badge status-${o.status}">${statusLabel(o.status)}</span>
-      </div>
-      <span class="text-amber-600 font-bold text-sm">${(o.total||0).toFixed(2)} ر.س</span>
-    </div>`).join('');
-}
-
-// ============================
-// ORDERS
-// ============================
-let ordersFilter = 'all';
-
-function filterOrders(filter) {
-  ordersFilter = filter;
-  ['all','pending','preparing','ready','served'].forEach(f => {
-    const btn = document.getElementById('filter-' + f);
-    if (btn) btn.className = f === filter
-      ? 'px-3 py-1 rounded-full text-xs font-medium bg-gray-800 text-white'
-      : 'px-3 py-1 rounded-full text-xs font-medium bg-gray-100 text-gray-600 hover:bg-gray-200';
-  });
-  renderOrders();
-}
-
-function renderOrders() {
-  let orders = getOrders().reverse();
-  if (ordersFilter !== 'all') orders = orders.filter(o => o.status === ordersFilter);
-  const container = document.getElementById('orders-list');
-  const empty = document.getElementById('orders-empty');
-  const pendingCount = getOrders().filter(o => o.status === 'pending').length;
-  const badge = document.getElementById('pending-badge');
-  if (pendingCount > 0) { badge.textContent = pendingCount; badge.classList.remove('hidden'); }
-  else { badge.classList.add('hidden'); }
-
-  if (!orders.length) { container.innerHTML = ''; empty.classList.remove('hidden'); return; }
-  empty.classList.add('hidden');
-
-  const nextStatus = { pending: 'preparing', preparing: 'ready', ready: 'served' };
-  const nextLabel = { pending: '👨‍🍳 بدء التحضير', preparing: '✅ جاهز', ready: '🍽️ تم التقديم' };
-
-  container.innerHTML = orders.map(o => `
-    <div class="bg-white rounded-2xl border border-gray-100 shadow-sm overflow-hidden">
-      <div class="flex items-center justify-between px-5 py-3 border-b border-gray-50">
-        <div class="flex items-center gap-3">
-          <span class="font-mono text-sm text-gray-400">#${String(o.id).slice(-4)}</span>
-          <span class="font-bold text-gray-800">طاولة ${o.tableNumber}</span>
-          <span class="status-badge status-${o.status}">${statusLabel(o.status)}</span>
-        </div>
-        <div class="flex items-center gap-2">
-          <span class="font-bold text-amber-600">${(o.total||0).toFixed(2)} ر.س</span>
-          ${nextStatus[o.status] ? `<button onclick="updateOrderStatus(${o.id}, '${nextStatus[o.status]}')" class="bg-amber-600 text-white text-xs px-3 py-1.5 rounded-xl hover:bg-amber-700">${nextLabel[o.status]}</button>` : ''}
-          ${o.status !== 'cancelled' && o.status !== 'served' ? `<button onclick="updateOrderStatus(${o.id}, 'cancelled')" class="bg-red-100 text-red-600 text-xs px-3 py-1.5 rounded-xl hover:bg-red-200">إلغاء</button>` : ''}
-        </div>
-      </div>
-      <div class="px-5 py-3">
-        <div class="flex flex-wrap gap-2 mb-2">
-          ${(o.items||[]).map(i => `<span class="text-xs bg-gray-100 px-2 py-1 rounded-lg">${i.name} × ${i.qty} — ${(i.price*i.qty).toFixed(2)} ر.س</span>`).join('')}
-        </div>
-        ${o.notes ? `<p class="text-xs text-gray-400">ملاحظات: ${o.notes}</p>` : ''}
-        <p class="text-xs text-gray-300 mt-1">${new Date(o.createdAt).toLocaleString('ar-SA')}</p>
-      </div>
-    </div>`).join('');
-}
-
-function updateOrderStatus(orderId, newStatus) {
-  const orders = getOrders();
-  const idx = orders.findIndex(o => o.id === orderId);
-  if (idx !== -1) { orders[idx].status = newStatus; saveOrders(orders); }
-  renderOrders();
-  if (currentTab === 'dashboard') renderDashboard();
-}
-
-function statusLabel(s) {
-  return { pending: 'انتظار', preparing: 'يُحضَّر', ready: 'جاهز', served: 'قُدِّم', cancelled: 'ملغي' }[s] || s;
-}
-
-// ============================
-// MENU MANAGEMENT
-// ============================
-let selectedMenuCatId = null;
-let editingCatId = null;
-let editingItemId = null;
-let uploadedImageBase64 = '';
-
-function renderMenuTab() {
-  renderCatList();
-  renderAdminItems();
-}
-
-function renderCatList() {
-  const cats = getCategories();
-  document.getElementById('cat-list').innerHTML = cats.map(cat => `
-    <div onclick="selectMenuCat(${cat.id})" class="flex items-center justify-between px-3 py-2.5 rounded-xl cursor-pointer group transition-colors ${selectedMenuCatId === cat.id ? 'bg-amber-600 text-white' : 'hover:bg-gray-50'}">
-      <span class="text-sm font-medium">${cat.icon || ''} ${cat.name}</span>
-      <div class="flex gap-1 opacity-0 group-hover:opacity-100">
-        <button onclick="event.stopPropagation();openCatDialog(${cat.id})" class="p-1 rounded hover:bg-black/10 text-xs">✏️</button>
-        <button onclick="event.stopPropagation();deleteCat(${cat.id})" class="p-1 rounded hover:bg-black/10 text-xs">🗑️</button>
-      </div>
-    </div>`).join('');
-}
-
-function selectMenuCat(catId) {
-  selectedMenuCatId = catId;
-  const cats = getCategories();
-  const cat = cats.find(c => c.id === catId);
-  document.getElementById('items-panel-title').textContent = 'عناصر: ' + (cat ? cat.name : '');
-  document.getElementById('add-item-btn').classList.remove('hidden');
-  renderCatList();
-  renderAdminItems();
-}
-
-function renderAdminItems() {
-  const placeholder = document.getElementById('items-placeholder');
-  const grid = document.getElementById('items-grid-admin');
-  if (!selectedMenuCatId) { placeholder.classList.remove('hidden'); grid.classList.add('hidden'); return; }
-  placeholder.classList.add('hidden');
-  grid.classList.remove('hidden');
-
-  const items = getItems().filter(i => i.categoryId === selectedMenuCatId);
-  if (!items.length) {
-    grid.innerHTML = `<div class="col-span-3 text-center py-12 text-gray-300"><div class="text-4xl mb-2">🍽️</div><p class="text-sm">لا توجد عناصر</p></div>`;
-    return;
-  }
-  grid.innerHTML = items.map(item => `
-    <div class="border border-gray-100 rounded-xl overflow-hidden bg-white">
-      <div class="aspect-video bg-gray-100 flex items-center justify-center overflow-hidden relative">
-        ${item.image ? `<img src="${item.image}" class="w-full h-full object-cover" />` : '<span class="text-3xl opacity-30">🍽️</span>'}
-        ${!item.available ? '<div class="absolute inset-0 bg-black/40 flex items-center justify-center"><span class="text-white text-xs bg-black/50 px-2 py-1 rounded">غير متاح</span></div>' : ''}
-      </div>
-      <div class="p-3">
-        <div class="flex justify-between gap-1 mb-1"><p class="font-bold text-sm truncate">${item.name}</p><p class="text-amber-600 font-bold text-sm flex-shrink-0">${item.price} ر.س</p></div>
-        <p class="text-xs text-gray-400 truncate mb-2">${item.desc || ''}</p>
-        <div class="flex items-center justify-between border-t border-gray-50 pt-2">
-          <label class="flex items-center gap-1.5 cursor-pointer">
-            <input type="checkbox" ${item.available ? 'checked' : ''} onchange="toggleItemAvailability(${item.id})" class="accent-amber-600" />
-            <span class="text-xs text-gray-500">${item.available ? 'متاح' : 'غير متاح'}</span>
-          </label>
-          <div class="flex gap-1">
-            <button onclick="openItemDialog(${item.id})" class="text-xs p-1.5 hover:bg-gray-100 rounded-lg">✏️</button>
-            <button onclick="deleteItem(${item.id})" class="text-xs p-1.5 hover:bg-red-50 rounded-lg text-red-400">🗑️</button>
-          </div>
-        </div>
-      </div>
-    </div>`).join('');
-}
-
-function toggleItemAvailability(itemId) {
-  const items = getItems();
-  const idx = items.findIndex(i => i.id === itemId);
-  if (idx !== -1) { items[idx].available = !items[idx].available; saveItems(items); }
-  renderAdminItems();
-}
-
-// Cat CRUD
-function openCatDialog(catId = null) {
-  editingCatId = catId;
-  const cat = catId ? getCategories().find(c => c.id === catId) : null;
-  document.getElementById('cat-dialog-title').textContent = catId ? 'تعديل التصنيف' : 'إضافة تصنيف';
-  document.getElementById('cat-name').value = cat ? cat.name : '';
-  document.getElementById('cat-icon').value = cat ? (cat.icon || '') : '';
-  document.getElementById('cat-dialog').classList.remove('hidden');
-}
-function closeCatDialog() { document.getElementById('cat-dialog').classList.add('hidden'); editingCatId = null; }
-function saveCat() {
-  const name = document.getElementById('cat-name').value.trim();
-  if (!name) return alert('أدخل اسم التصنيف');
-  const icon = document.getElementById('cat-icon').value.trim();
-  const cats = getCategories();
-  if (editingCatId) {
-    const idx = cats.findIndex(c => c.id === editingCatId);
-    if (idx !== -1) { cats[idx].name = name; cats[idx].icon = icon; }
-  } else {
-    cats.push({ id: Date.now(), name, icon });
-  }
-  saveCats(cats);
-  closeCatDialog();
-  renderCatList();
-}
-function deleteCat(catId) {
-  if (!confirm('حذف هذا التصنيف وجميع عناصره؟')) return;
-  const cats = getCategories().filter(c => c.id !== catId);
-  const items = getItems().filter(i => i.categoryId !== catId);
-  saveCats(cats); saveItems(items);
-  if (selectedMenuCatId === catId) { selectedMenuCatId = null; document.getElementById('add-item-btn').classList.add('hidden'); }
-  renderMenuTab();
-}
-
-// Item CRUD
-function openItemDialog(itemId = null) {
-  editingItemId = itemId;
-  uploadedImageBase64 = '';
-  const item = itemId ? getItems().find(i => i.id === itemId) : null;
-  document.getElementById('item-dialog-title').textContent = itemId ? 'تعديل العنصر' : 'إضافة عنصر';
-  document.getElementById('item-name').value = item ? item.name : '';
-  document.getElementById('item-price').value = item ? item.price : '';
-  document.getElementById('item-desc').value = item ? (item.desc || '') : '';
-  document.getElementById('item-available').checked = item ? item.available : true;
-
-  const preview = document.getElementById('item-img-preview');
-  if (item && item.image) { preview.innerHTML = `<img src="${item.image}" class="w-full h-full object-cover" />`; uploadedImageBase64 = item.image; }
-  else { preview.innerHTML = '📷'; }
-
-  const catSel = document.getElementById('item-cat');
-  catSel.innerHTML = getCategories().map(c => `<option value="${c.id}" ${(item ? item.categoryId : selectedMenuCatId) == c.id ? 'selected' : ''}>${c.icon} ${c.name}</option>`).join('');
-  document.getElementById('item-dialog').classList.remove('hidden');
-}
-function closeItemDialog() { document.getElementById('item-dialog').classList.add('hidden'); editingItemId = null; }
-function handleImageUpload(e) {
-  const file = e.target.files[0];
-  if (!file) return;
-  const reader = new FileReader();
-  reader.onload = ev => {
-    // Compress
-    const img = new Image();
-    img.onload = () => {
-      const canvas = document.createElement('canvas');
-      let w = img.width, h = img.height;
-      if (w > 400) { h = h * 400 / w; w = 400; }
-      canvas.width = w; canvas.height = h;
-      canvas.getContext('2d').drawImage(img, 0, 0, w, h);
-      const b64 = canvas.toDataURL('image/jpeg', 0.7);
-      uploadedImageBase64 = b64;
-      document.getElementById('item-img-preview').innerHTML = `<img src="${b64}" class="w-full h-full object-cover" />`;
-    };
-    img.src = ev.target.result;
-  };
-  reader.readAsDataURL(file);
-}
-function saveItem() {
-  const name = document.getElementById('item-name').value.trim();
-  const price = parseFloat(document.getElementById('item-price').value);
-  const desc = document.getElementById('item-desc').value.trim();
-  const catId = parseInt(document.getElementById('item-cat').value);
-  const available = document.getElementById('item-available').checked;
-  if (!name || !price) return alert('أدخل الاسم والسعر');
-
-  const items = getItems();
-  if (editingItemId) {
-    const idx = items.findIndex(i => i.id === editingItemId);
-    if (idx !== -1) { items[idx] = { ...items[idx], name, price, desc, categoryId: catId, available, image: uploadedImageBase64 || items[idx].image }; }
-  } else {
-    items.push({ id: Date.now(), name, price, desc, categoryId: catId, available, image: uploadedImageBase64 });
-  }
-  saveItems(items);
-  closeItemDialog();
-  renderAdminItems();
-}
-function deleteItem(itemId) {
-  if (!confirm('حذف هذا العنصر؟')) return;
-  saveItems(getItems().filter(i => i.id !== itemId));
-  renderAdminItems();
-}
-
-// ============================
-// TABLES
-// ============================
-function renderTables() {
-  const tables = getTables();
-  document.getElementById('tables-grid').innerHTML = tables.map(t => `
-    <div class="bg-white rounded-2xl p-5 shadow-sm border border-gray-100 text-center">
-      <div class="text-3xl font-bold text-gray-800 mb-1">${t.number}</div>
-      <p class="text-sm text-gray-500 mb-3">${t.label || 'طاولة ' + t.number}</p>
-      <div class="bg-gray-50 rounded-xl p-3 mb-3">
-        <canvas id="qr-${t.id}" width="100" height="100" class="mx-auto"></canvas>
-      </div>
-      <div class="flex gap-2">
-        <button onclick="downloadQR(${t.id}, ${t.number})" class="flex-1 bg-amber-600 text-white text-xs py-2 rounded-xl hover:bg-amber-700">⬇️ تحميل</button>
-        <button onclick="deleteTable(${t.id})" class="px-3 bg-red-50 text-red-500 text-xs py-2 rounded-xl hover:bg-red-100">🗑️</button>
-      </div>
-    </div>`).join('');
-  tables.forEach(t => generateQR(t.id, t.number));
-}
-
-function generateQR(tableId, tableNumber) {
-  const canvas = document.getElementById('qr-' + tableId);
-  if (!canvas) return;
-
-  // ---------------------------------------------------------
-  // رابط صفحة الزبون المرفوع على GitHub Pages
-  // ملاحظة: تأكد أن اسم الملف داخل المجلد هو index.html أو customer-menu.html
-  // حسب ما قمت برفعته. افترضت هنا أن الصفحة الرئيسية للمجلد هي التي تحتوي القائمة.
-  // ---------------------------------------------------------
-  
-  const baseWebsiteURL = "https://al-hafed2005.github.io/meno_cust"; 
-  const customerPagePath = "/index.html"; // إذا كان ملف الزبون اسمه مختلفاً، غير هذا الاسم (مثلاً menu.html)
-  
-  // تجميع الرابط النهائي ليصبح مثلاً:
-  // https://al-hafed2005.github.io/meno_cust/index.html?table=1
-  const finalLink = baseWebsiteURL + customerPagePath + "?table=" + tableNumber;
-
-  // رسم الباركود باستخدام الرابط الجديد
-  drawQRCode(canvas, finalLink);
-}
-
-function downloadQR(tableId, tableNumber) {
-  const canvas = document.getElementById('qr-' + tableId);
-  if (!canvas) return;
-  const link = document.createElement('a');
-  link.download = 'table-' + tableNumber + '-qr.png';
-  link.href = canvas.toDataURL();
-  link.click();
-}
-
-function addTable() {
-  const num = parseInt(document.getElementById('new-table-num').value);
-  const label = document.getElementById('new-table-label').value.trim();
-  if (!num || num < 1) return alert('أدخل رقم صحيح');
-  const tables = getTables();
-  if (tables.find(t => t.number === num)) return alert('هذا الرقم مستخدم بالفعل');
-  tables.push({ id: Date.now(), number: num, label: label || 'طاولة ' + num });
-  saveTables(tables);
-  document.getElementById('new-table-num').value = '';
-  document.getElementById('new-table-label').value = '';
-  renderTables();
-}
-
-function deleteTable(tableId) {
-  if (!confirm('حذف هذه الطاولة؟')) return;
-  saveTables(getTables().filter(t => t.id !== tableId));
-  renderTables();
-}
-
-// Simple QR code generator (pure canvas, no library)
-function drawQRCode(canvas, text) {
-  // Use Google Charts QR API for rendering
-  const size = 100;
-  const ctx = canvas.getContext('2d');
-  const img = new Image();
-  img.crossOrigin = 'anonymous';
-  img.onload = () => { ctx.drawImage(img, 0, 0, size, size); };
-  img.onerror = () => {
-    ctx.fillStyle = '#fff';
-    ctx.fillRect(0, 0, size, size);
-    ctx.fillStyle = '#333';
-    ctx.font = '8px monospace';
-    ctx.fillText('?table=' + text.split('table=')[1], 5, 55);
-  };
-  img.src = 'https://api.qrserver.com/v1/create-qr-code/?size=100x100&data=' + encodeURIComponent(text);
-}
-
-// ============================
-// ORDER POLLING (real-time simulation)
-// ============================
-let lastOrderCount = 0;
-function startOrderPolling() {
-  lastOrderCount = getOrders().length;
-  setInterval(() => {
-    const count = getOrders().length;
-    if (count > lastOrderCount) {
-      lastOrderCount = count;
-      document.getElementById('new-order-notif').classList.remove('hidden');
-      if (currentTab === 'orders') renderOrders();
-      if (currentTab === 'dashboard') renderDashboard();
-    }
-    // Update pending badge
-    const pendingCount = getOrders().filter(o => o.status === 'pending').length;
-    const badge = document.getElementById('pending-badge');
-    if (pendingCount > 0) { badge.textContent = pendingCount; badge.classList.remove('hidden'); }
-    else { badge.classList.add('hidden'); }
-  }, 2000);
-}
-</script>
 </body>
 </html>
